@@ -2,4 +2,4 @@ Choose the appropriate data sets individually and carry out the basic analysis o
 
 Obtain appropriate like Iris data, utility data, bike sharing data etc., multivariate data can for the above assignment.
 
-**Complete report to be submitted by 27.02.2024 to my email id. <mrsrin8@gmail.com> **
+Complete report to be submitted by 27.02.2024 to my email id. <mrsrin8@gmail.com>
