@@ -1,4 +1,4 @@
-# 🛒💳Customer Segmentation ![license](https://img.shields.io/github/license/alifrmf/Customer-Segmentation-Using-Clustering-Algorithms.svg) ![releases](https://img.shields.io/github/release/alifrmf/Customer-Segmentation-Using-Clustering-Algorithms.svg)
+# Customer Segmentation
 
 **Customer Segmentation Using Unsupervised Machine Learning Algorithms**
 
