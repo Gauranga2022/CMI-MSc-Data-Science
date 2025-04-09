@@ -1,8 +1,6 @@
 # Customer Segmentation
 
 **Customer Segmentation Using Unsupervised Machine Learning Algorithms**
-
-![Customer Segmentation (1)](https://user-images.githubusercontent.com/105715834/233505669-1b249cf7-075e-4655-9cc9-944ce0b9cbd1.gif)
   
 **☀️What is Customer Segmentation?**
     
