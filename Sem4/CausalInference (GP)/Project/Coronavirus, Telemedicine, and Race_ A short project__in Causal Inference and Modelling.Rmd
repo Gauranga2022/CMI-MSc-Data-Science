@@ -1,0 +1,1495 @@
+---
+title: 'Coronavirus, Telemedicine, and Race: A short project in Causal Inference and
+  Modelling'
+author: "Gauranga Kumar Baishya"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: 
+    latex_engine: xelatex
+  html_document: default
+  extra_dependencies: ["unicode-math"]
+header-includes:
+  - \usepackage{unicode-math}
+  - \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Libraries and installs
+
+```{r}
+if (!require(DiagrammeR)) install.packages("DiagrammeR", repos = "https://cloud.r-project.org")
+if (!require("dplyr")) install.packages("dplyr", repos = "https://cloud.r-project.org")
+install.packages("pROC", repos = "https://cloud.r-project.org")
+install.packages("pwr", repos = "https://cloud.r-project.org")
+install.packages("epiR", repos = "https://cloud.r-project.org")
+```
+
+```{r}
+library(DiagrammeR)
+library(dplyr)
+library(pROC)
+library(pwr)
+library(epiR)
+```
+
+
+
+# Part 1
+
+## Introduction
+
+We would overstate our telemedicine app’s effectiveness by claiming it reduces the risk of new coronavirus infections by 16.9%—when in fact it will only reduce this risk by 3.1%. 
+
+Consider a timely hypothetical twist on a classic example of spurious correlation: Recently, ice cream sales have been dropping—along with the number of homicides. But this isn’t because eating ice cream drives people to murder. It’s because a community-wide shelter-in-place mandate was enacted to prevent the spread of a novel infectious agent. This confounding factor drove down both ice cream sales and the number of homicides; hence the spurious correlation.
+
+In this project, we’ll investigate a synthetic dataset inspired by a recent healthcare example involving racial disparities in COVID-19 cases ([Garg et al, 2020](https://pubmed.ncbi.nlm.nih.gov/32298251/); [Aubrey, 2020](https://www.npr.org/sections/coronavirus-live-updates/2020/04/08/830030932/cdc-hospital-data-point-to-racial-disparity-in-covid-19-cases#:~:text=CDC%20Hospital%20Data%20Point%20To%20Racial%20Disparity%20In%20COVID%2D19%20Cases&text=About%201%20in%203%20people,for%20Disease%20Control%20and%20Prevention.)).
+
+Our analysis goal will be to help public health authorities in our simulated world reduce SARS-CoV-2 (“coronavirus”) infections, promote healthy lifestyle choices—particularly while social distancing and sheltering-in-place—that reduce the risk of coronavirus infection. But to do this, we’ll need an unbiased or statistically consistent (i.e., more unbiased with larger samples) estimate of the true effect of our would-be intervention.
+
+We will understand how causal assumptions change our interpretation of predictions, moving them towards explanations; to understand why this is needed before we can quantify the impact of our tech solution.
+
+Additionally: How to recognize the difference between a modeling association and a causal effect. How to conduct causal inference via the g-formula ([Robins, 1986](https://www.sciencedirect.com/science/article/pii/0270025586900886); [Hernán and Robins, 2006](https://jech.bmj.com/content/60/7/578.short)) and propensity score weighting([Rosenbaum and Rubin, 1983](https://academic.oup.com/biomet/article/70/1/41/240879?login=false); [Hirano and Imbens, 2001](https://link.springer.com/article/10.1023/A:1020371312283); [Lunceford and Davidian, 2004](https://onlinelibrary.wiley.com/doi/abs/10.1002/sim.1903)).
+
+We will see how a confounder biases our estimate of the would-be effect of a hypothetical telemedicine intervention. The biases that emerge from our synthetic data are shown below.
+
+In Part 1, we’ll analyze synthetic real-world evidence (RWE) data. We’ll begin to see why it isn’t enough, in general, to state the causal mechanisms (e.g., directed acyclic graph) and control for all confounders-assuming we observe all of them in our dataset. We must go one critical step further in order to estimate an intervention’s true effect size and direction. This step uses the Law of Total Expectation, a straightforward and intuitive concept we actually use all the time, that we’ll review in Part 2.
+
+We’ll conclude in Part 2 by analyzing data from a synthetic randomized controlled trial (RCT) in which we’d randomly assigned the app to 50% of all trial participants. We’ll learn how to use the Law of Total Expectation to conduct causal inference using observational RWE data. (In both the RWE and RCT, the app had the same average effect on infection risk regardless of other causes; i.e., there was no interaction of app usage with other causes.) Specifically, we’ll learn how to apply the g-formula (also called “standardization”) and propensity score weighting to estimate the true overall or average treatment effect (ATE).
+
+Here in Part 1, we’ll analyze a synthetic RWE dataset with three person-level variables: `infection` status, `app` usage, and `race` (Black or White only for simplicity).
+
+- Part 1 Objective: To try-and fail-to estimate the ATE of app usage on infections. We’ll specify the ATE as the difference in infection risk, or risk difference (RD); specifically, as the risk among users minus that among non-users.
+
+- What We’ll Learn: How to recognize the difference between a statistical contrast (e.g., RD) and a causal effect. Estimating the ATE incorrectly by confusing the former for the latter has far-reaching public health implications.
+
+We will conclude Part 1 with the key insight that if we mistakenly infer causation from correlation, *We would overstate our telemedicine app’s effectiveness by claiming it reduces the risk of new coronavirus infections by 16.9% - when in fact it will only reduce this risk by 3.1%.*
+
+
+## Generate Data
+
+### RWE Simulation Parameters and Data-generation Models
+
+#### Feature distribution
+
+Race: Based on the U.S. Census, the probability of being White was set as  
+\(\Pr(Z = 1) = \pi_Z = 0.8560091\).
+
+#### Outcome Model
+
+##### Partial Causal Model
+
+Race and app usage both impact the infection risk. The partial DAG is:
+
+1. App Usage (\(X\)) → Infection (\(Y\))
+2. Race (\(Z\)) → Infection (\(Y\))
+
+
+```{r}
+grViz("
+digraph causal {
+  graph [rankdir = LR, fontsize = 10, width = 4, height = 2]
+
+  node [shape = plaintext, fontsize = 12, width = 0.5, height = 0.5]
+  X [label = 'App\\nUsage\\n(X)']
+  Z [label = 'Race\\n(Z)']
+  Y [label = 'Infection\\n(Y)']
+
+  edge [color = black, arrowhead = vee, penwidth = 1]
+
+  X -> Y
+  Z -> Y
+}
+", width = 400, height = 200)  
+```
+It's partial because we haven't yet specified how (if at all) app usage and race are associated.
+
+##### Statistical Model
+
+- The infection risk is lower for app users (\(X = 1\)) versus non-users (\(X = 0\)).
+- The infection risk is lower for Whites (\(Z = 1\)) versus African Americans (\(Z = 0\)) due to structural inequality (e.g., better access to care, higher SES, fewer underlying health conditions).
+
+These statistical relationships are described by the logistic model:
+
+\[
+\text{logit}(\Pr(Y = 1|X, Z)) = \beta_0 + \beta_X X + \beta_Z Z,
+\]
+
+where \(\beta_0 = -0.2381882\), \(\beta_X = -0.3\), and \(\beta_Z = -1.9469256\). Hence, the probability of infection given race and app usage is
+
+\[
+\Pr(Y = 1|X, Z) = \frac{e^{\beta_0 + \beta_X X + \beta_Z Z}}{1 + e^{\beta_0 + \beta_X X + \beta_Z Z}}.
+\]
+
+In particular, the infection risk is:
+
+- \(\Pr(Y = 1|X = 0, Z = 0) = 0.441\) for African Americans not using the app
+- \(\Pr(Y = 1|X = 1, Z = 0) = 0.369\) for African Americans using the app
+- \(\Pr(Y = 1|X = 0, Z = 1) = 0.101\) for Whites not using the app
+- \(\Pr(Y = 1|X = 1, Z = 1) = 0.077\) for Whites using the app
+
+I chose these parameter values to reflect what was known as of 10 April 2020, as reported in a then recent healthcare example involving racial disparities in COVID-19 cases ([Garg et al, 2020](https://www.cdc.gov/mmwr/volumes/69/wr/mm6915e3.htm); [Aubrey, 2020](https://www.npr.org/sections/coronavirus-live-updates/2020/04/08/830030932/cdc-hospital-data-point-to-racial-disparity-in-covid-19-cases)) and this [Washington Post article](https://www.washingtonpost.com/news/powerpost/paloma/the-health-202/2020/04/09/the-health-202-los-angeles-is-racing-to-discover-the-true-coronavirus-infection-rate/5e8de70588e0fa101a75e13d/). The table emulated in the simulations is:
+
+```{r}
+# Define probabilities
+prBlack <- 0.144  
+prWhite <- 0.856  
+
+# Infection probabilities from logistic model (conditional on X and Z)
+prInfectionGivenBlackNonUser <- 0.441  
+prInfectionGivenBlackUser <- 0.369     
+prInfectionGivenWhiteNonUser <- 0.101  
+prInfectionGivenWhiteUser <- 0.077     
+
+# app usage rate
+prX <- 0.0486  
+
+# marginal infection probabilities
+prInfectionGivenBlack <- prInfectionGivenBlackNonUser * (1 - prX) + prInfectionGivenBlackUser * prX
+prInfectionGivenWhite <- prInfectionGivenWhiteNonUser * (1 - prX) + prInfectionGivenWhiteUser * prX
+
+# joint probabilities 
+uninfectedBlack <- round((1 - prInfectionGivenBlack) * prBlack, 3)  
+infectedBlack <- round(prInfectionGivenBlack * prBlack, 3)          
+
+# White values 
+uninfectedWhite <- 0.769  
+infectedWhite <- 0.087    
+
+# Create table
+knitr::kable(
+  dplyr::tribble(
+    ~Race, ~Uninfected, ~Infected, ~`Row Total`,
+    "Black", uninfectedBlack, infectedBlack, prBlack,
+    "White", uninfectedWhite, infectedWhite, prWhite,
+    "Column Total", 
+    round(uninfectedBlack + uninfectedWhite, 3), 
+    round(infectedBlack + infectedWhite, 3), 
+    1.000)
+  )
+```
+
+#### Propensity Model: App Usage
+
+##### Partial Causal Model
+
+Race affects app usage. For example, suppose our app is only available on iPhone, and that African Americans are less likely than Whites to own iPhones (e.g., page 7 of Smith, 2013). In addition, suppose African Americans have worse access to telemedicine services, and so tend to be less aware of such apps.
+
+That is, the partial DAG is: Race (Z) → App Usage (X)
+
+```{r}
+DiagrammeR::grViz("
+digraph causal {
+
+  # Nodes
+  node [shape = plaintext]
+  Z [label = 'Race \n (Z)']
+  X [label = 'App \n Usage \n (X)']
+
+  # Edges
+  edge [color = black,
+        arrowhead = vee]
+  rankdir = LR
+  Z -> X
+
+  # Graph
+  graph [overlap = true]
+}", width = 400, height = 200)
+
+```
+
+
+
+##### Statistical Model
+
+Whites are more likely to use the app than African Americans. This statistical relationship is described by the logistic model
+
+\[
+\text{logit}(\Pr(X = 1)) = \alpha_0 + \alpha_Z Z,
+\]
+
+where \(\alpha_0 = -1\) and \(\alpha_Z = 3\). Hence, the probability of using the app given race is
+
+\[
+\Pr(X = 1|Z) = \frac{e^{\alpha_0+\alpha_Z Z}}{1 + e^{\alpha_0+\alpha_Z Z}}.
+\]
+
+In particular:
+
+1. \(\Pr(X = 1|Z = 0) \times 100 = 26.9\%\) of African Americans use the app
+2. \(\Pr(X = 1|Z = 1) \times 100 = 88.1\%\) of Whites use the app
+
+##### Causal Model
+
+The full DAG is:
+
+1. App Usage \((X)\) → Infection \((Y)\)
+2. Race \((Z)\) → Infection \((Y)\)
+3. Race \((Z)\) → App Usage \((X)\)
+
+```{r}
+DiagrammeR::grViz("
+digraph causal {
+
+  # Nodes
+  node [shape = plaintext]
+  X [label = 'App \n Usage \n (X)']
+  Z [label = 'Race \n (Z)']
+  Y [label = 'Infection \n (Y)']
+
+  # Edges
+  edge [color = black,
+        arrowhead = vee]
+  rankdir = LR
+  X -> Y
+  Z -> Y
+  Z -> X
+
+  # Graph
+  graph [overlap = true]
+}", width = 400, height = 200)
+```
+
+
+
+### RWE Simulation R Code
+```{r}
+##### Set simulation parameters
+
+### Preliminaries
+random_seed <- 2004101447
+sample_size_observational <- 80000
+
+### Feature distribution
+piZ <- 0.755 / (0.755 + 0.127) # race (based on U.S. Census)
+
+### Outcome model
+
+# beta0 and betaZ are derived from:
+#   https://www.cdc.gov/mmwr/volumes/69/wr/mm6915e3.htm
+#   https://www.npr.org/sections/coronavirus-live-updates/2020/04/08/830030932/cdc-hospital-data-point-to-racial-disparity-in-covid-19-cases
+#   https://www.washingtonpost.com/news/powerpost/paloma/the-health-202/2020/04/09/the-health-202-los-angeles-is-racing-to-discover-the-true-coronavirus-infection-rate/5e8de70588e0fa101a75e13d/
+
+prInfection <- 0.15
+prBlack <- 1 - piZ
+prWhite <- piZ
+prBlackGivenInfection <- 33 / (33 + 45)
+prWhiteGivenInfection <- 1 - prBlackGivenInfection
+prInfectionGivenBlack <- prBlackGivenInfection * prInfection / prBlack
+prInfectionGivenWhite <- prWhiteGivenInfection * prInfection / prWhite
+
+beta0 <- log(prInfectionGivenBlack / (1 - prInfectionGivenBlack)) # baseline: infection risk for African Americans who don't use app
+betaX <- -0.3
+betaZ <- log(prInfectionGivenWhite / (1 - prInfectionGivenWhite)) - beta0 # average influence of being White on infection risk
+
+### Propensity model: app usage
+alpha0_observational <- -1 # observational real-world evidence: baseline probability of using app for African Americans
+alphaZ_observational <- 3 # observational real-world evidence: average influence of being White on probability of using app
+
+##### Generate data.
+set.seed(random_seed)
+observational_rwe <- dplyr::tibble(
+  race = rbinom(n = sample_size_observational, size = 1, prob = piZ),
+  app = rbinom(n = sample_size_observational, size = 1, prob = plogis(alpha0_observational + alphaZ_observational * race)),
+  infection = rbinom(n = sample_size_observational, size = 1, prob = plogis(beta0 + betaX * app + betaZ * race))
+) %>%
+  dplyr::mutate(
+    race = ifelse(race == 1, "White", ifelse(race == 0, "Black", NA)),
+    app = ifelse(app == 1, "used app", ifelse(app == 0, "didn't use app", NA)),
+    infection = ifelse(infection == 1, "1. infected", ifelse(infection == 0, "0. uninfected", NA))
+  )
+```
+
+```{r}
+observational_rwe
+```
+
+
+## Dataset Characteristics
+The observed (i.e., non-randomized) RWE data are in the tibble observational_rwe
+```{r}
+glimpse(observational_rwe)
+```
+Each observation (i.e., row) represents a unique individual who was originally susceptible and uninfected. The variables and their unique values are:
+```{r}
+knitr::kable(apply(observational_rwe, 2, unique))
+```
+Let’s randomly split the data into an 80% training set for exploratory data analysis (EDA), and a 20% holdout set for fitting an explanatory model in our final validation/confirmatory analysis.
+
+```{r}
+holdout_proportion <- 0.2
+observational_rwe <- observational_rwe %>% dplyr::mutate(rownum = row_number())
+set.seed(2004120322)
+observational_rwe_training <- observational_rwe %>% dplyr::sample_frac(1 - holdout_proportion)
+observational_rwe_holdout <- observational_rwe %>% dplyr::filter(!(rownum %in%
+  observational_rwe_training$rownum))
+
+# clean up: remove rownum
+observational_rwe$rownum <- NULL
+observational_rwe_training$rownum <- NULL
+observational_rwe_holdout$rownum <- NULL
+```
+There are 64000 training observations and 16000 holdout observations.
+
+## Exploratory Data Analysis
+### Univariate Associations
+#### Correlation Matrix
+```{r}
+dummy_rwe_training <- observational_rwe_training %>%
+  dplyr::mutate(
+    race = (race == "White"),
+    app = (app == "used app"),
+    infection = (infection == "1. infected")
+  )
+```
+
+```{r}
+knitr::kable(round(cor(dummy_rwe_training), 4))
+```
+
+```{r}
+corrplot::corrplot.mixed(cor(dummy_rwe_training))
+```
+Even in this simple correlation matrix, there are already signs of the challenges ahead. Can you spot them?
+#### Infections by App Usage (Marginal Model)
+Let’s examine our main relationship of interest.
+```{r}
+observational_rwe_training %>%
+  ggplot2::ggplot(ggplot2::aes(x = app, fill = infection)) +
+  ggplot2::theme_classic() +
+  ggplot2::geom_bar(position = "dodge") +
+  ggplot2::ggtitle("Infections by App Usage")
+```
+```{r}
+df_rwe_training <- with(
+  observational_rwe_training,
+  cbind(
+    table(app, infection),
+    prop.table(table(app, infection), margin = 1) # row proportions
+  )
+)
+```
+
+```{r}
+knitr::kable(df_rwe_training) # row proportions
+```
+There was a lower infection rate (i.e., empirical or observed infection risk) among app users: Only 9.1% of users had infections, compared to 27.7% of non-users. The empirical RD is 0.091 -  0.277 = -0.186 —a marginal quantity in statistical terms because it does not account for (i.e., “is marginalized over”) any other variables; a conditional model.
+```{r}
+out_fisher_rwe_training <- with(
+  observational_rwe_training,
+  fisher.test(app, infection)
+)
+```
+
+```{r}
+out_fisher_rwe_training
+```
+In addition, there is strong statistical evidence (i.e., statistical significance) that infections varied by app usage (\(p_{\text{EDA}} << 0.001\)). Here, the estimated odds of infection for app users were only 0.262 (i.e., roughly a quarter) that of non-users, with an EDA 95% confidence interval (CI) of (0.249, 0.275).
+
+- Statistical significance does not imply importance: This strong statistical evidence is not surprising. Bigger samples typical of RWE data provide better estimates of progressively smaller differences in outcome means (i.e., for any given set of outcome distributions with finite means and variances). This says nothing about the domain (e.g., scientific, clinical, research, business) usefulness of those differences.
+
+- Correlation does not imply causation: In no way does this finding imply that using the app reduces infection risk. Statistical findings like this cannot imply causation. Statistical findings are implications of causal relationships, not vice versa. But it should prompt us to investigate further, and should be assessed alongside subsequent findings and hypotheses to help explain how this association arose.
+
+#### Infections by Race
+Race seems to have been associated with infection.
+```{r}
+observational_rwe_training %>%
+  ggplot2::ggplot(ggplot2::aes(x = race, fill = infection)) +
+  ggplot2::theme_classic() +
+  ggplot2::geom_bar(position = "dodge") +
+  ggplot2::ggtitle("Infections by Race")
+```
+```{r}
+df_rwe_training_race_infection <- with(
+  observational_rwe_training,
+  cbind(
+    table(race, infection),
+    prop.table(table(race, infection), margin = 1) # row proportions
+  )
+)
+```
+
+```{r}
+knitr::kable(df_rwe_training_race_infection) # row proportions
+```
+```{r}
+out_fisher_rwe_training_race_infection <- with(
+  observational_rwe_training,
+  fisher.test(race, infection)
+)
+```
+
+```{r}
+out_fisher_rwe_training_race_infection
+```
+African Americans were more likely to have been infected than Whites (\(p_{\text{EDA}} << 0.001\)): 42.1% of African Americans were infected, compared to 8.1% of Whites. Put differently, the estimated odds of infection for Whites were 0.121 (95% CI\(_{\text{EDA}}\): 0.115, 0.127) times that of African Americans. This finding is plausible due to structural inequality: African Americans tend to have worse access to care, lower socioeconomic status (SES), and more underlying health conditions.
+
+#### App Usage by Race
+Importantly, it looks like race was strongly associated with app usage.
+```{r}
+observational_rwe_training %>%
+  ggplot2::ggplot(ggplot2::aes(x = race, fill = app)) +
+  ggplot2::theme_classic() +
+  ggplot2::geom_bar(position = "dodge") +
+  ggplot2::ggtitle("App Usage by Race")
+```
+```{r}
+df_rwe_training_race_app <- with(
+  observational_rwe_training,
+  cbind(
+    table(race, app),
+    prop.table(table(race, app), margin = 1) # row proportions
+  )
+)
+```
+
+```{r}
+knitr::kable(df_rwe_training_race_app) # row proportions
+```
+```{r}
+out_fisher_rwe_training_race_app <- with(
+  observational_rwe_training,
+  fisher.test(race, app)
+)
+```
+
+```{r}
+out_fisher_rwe_training_race_app
+```
+African Americans were less likely to have used the app than Whites (\(p_{\text{EDA}} << 0.001\)): Only 27.2% of African Americans used the app, compared to 88.2% of Whites. Put differently, the estimated odds of using the app for Whites were 20.001 (95% CI\(_{\text{EDA}}\): 18.956, 21.108) times that of African Americans.
+
+This finding is plausible also due to structural inequality. For example, suppose our app was only available on iPhone. African Americans are less likely than Whites to own iPhones (e.g., page 7 of Smith, 2013), which would have limited their access to the app. African Americans may also have worse access to telemedicine options in general.
+
+#### Implications for Explanatory Modeling
+
+What do these findings imply about how we should approach estimating the ATE? Could race affect both app usage and infection risk? If so, race would be a confounder-meaning our marginal RD estimate earlier will not suffice as an estimate of the ATE. (We’ll see how later on, and why this is so in Part 2.)
+
+### Variable Selection
+#### Prediction Modeling
+
+Suppose we decide to fit a prediction model. We think this may help us decide if we should include race in our final explanatory model (in addition to app usage). We’ll fit a 10-fold cross-validated ridge-regularized generalized linear model (GLM) with logit link (i.e., corresponding to a logistic regression).
+```{r}
+set.seed(2004110254)
+glmnet_rwe_training <- glmnet::cv.glmnet(
+  x = model.matrix(
+    object = infection ~ app + race,
+    data = observational_rwe_training
+  ),
+  y = observational_rwe_training$infection,
+  family = "binomial",
+  type.measure = "auc",
+  alpha = 0 # ridge: https://web.stanford.edu/~hastie/glmnet/glmnet_alpha.html
+)
+glmnet_rwe_training$glmnet_preds <- as.numeric(
+  predict(
+    object = glmnet_rwe_training,
+    newx = model.matrix(
+      object = infection ~ app + race,
+      data = observational_rwe_training
+    ),
+    s = glmnet_rwe_training$lambda.min,
+    type = "response"
+  )
+)
+glmnet_ROC_rwe_training <- pROC::roc(
+  response = observational_rwe_training$infection,
+  predictor = glmnet_rwe_training$glmnet_preds
+)
+coef_glmnet_rwe_training <- coef(glmnet_rwe_training)
+```
+
+```{r}
+plot(glmnet_ROC_rwe_training)
+```
+
+```{r}
+coef_glmnet_rwe_training
+```
+We’ll select `app` regardless of its coefficient size because it is our potential intervention. Still, we note that an automated search for important predictors ranked by coefficient size would have ranked `race` higher than `app`. We wonder if this procedure could potentially have excluded true causes with smaller coefficients from other analyses we’ve done-causes that were important for recommending courses of action.
+
+Importantly, note that the area under the receiver operating characteristic (ROC) curve (AUC) is not particularly large even though there exists a true ATE of app usage on infection risk by design. We use the simulation parameters and models (see Appendix) to calculate this ATE as -0.031. (We’ll derive this calculation in Part 2.) This ATE is only modestly sized; hence the modest AUC.
+
+**“To explain or to predict?”** These findings underscore the important points in [Shmueli, 2010](#) about the different objectives, procedures, and properties of prediction and explanation.
+
+#### Implications for Explanatory Modeling
+
+We decide to keep `race` in the final explanatory model due to its relatively large prediction coefficient, even after controlling for `app`.
+
+### Propose Explanatory Model
+
+An explanatory model is a domain hypothesis comprised of a causal model and a statistical model.
+
+- We will validate or confirm the statistical model using our holdout data.
+- We cannot validate or confirm the causal model using only our RWE data (training or holdout). We’d need to conduct an experiment or RCT to do this, or provide evidence in favor of our proposed causal model from the scientific literature.
+- We *can*-and should!-clearly state the causal model we’re assuming to be true. This is a key piece of scientific communication: It helps the reader interpret and assess our findings correctly before taking further action.
+
+To fit the explanatory statistical model with a desired level of statistical power and evidence, we also need to specify a sample size.
+
+#### Causal Model
+
+From our findings, we propose the following causal model, formalized as a directed acyclic graph (DAG) ([Pearl, 2009](https://bayes.cs.ucla.edu/BOOK-2K/)):
+
+1. App Usage → Infection
+2. Race → Infection
+3. Race → App Usage
+
+```{r}
+DiagrammeR::grViz("
+digraph causal {
+
+  # Nodes
+  node [shape = plaintext]
+  Z [label = 'Race']
+  X [label = 'App \n Usage']
+  Y [label = 'Infection']
+
+  # Edges
+  edge [color = black,
+        arrowhead = vee]
+  rankdir = LR
+  X -> Y
+  Z -> X
+  Z -> Y
+
+  # Graph
+  graph [overlap = true]
+}", width = 400, height = 180)
+```
+Here, race confounds the effect of app usage on infection.
+
+#### Statistical Model and Sample Size
+Based on our DAG, it makes sense to model the infection risk as a function of race and app usage. We propose the following logistic model.
+```{r}
+glm_rwe_training <- glm(
+  data = observational_rwe_training,
+  formula = as.factor(infection) ~ app + race,
+  family = "binomial"
+)
+```
+
+```{r}
+summary(glm_rwe_training)$coefficients
+```
+The estimated odds of infection for app users were \(\exp(-0.343) = 0.709\) (95% CI\(_{\text{EDA}}\): 0.666, 0.756) times that of non-users (regardless of race).
+
+The corresponding estimated infection risks for app usage by race are:
+
+```{r}
+risk_didnt_use_app_black_training <- plogis(coef(glm_rwe_training) %*% c(1, 0, 0))
+risk_used_app_black_training <- plogis(coef(glm_rwe_training) %*% c(1, 1, 0))
+risk_didnt_use_app_white_training <- plogis(coef(glm_rwe_training) %*% c(1, 0, 1))
+risk_used_app_white_training <- plogis(coef(glm_rwe_training) %*% c(1, 1, 1))
+```
+> 0.443 for African Americans are not using the app
+> 0.361 for African Americans are using the app
+> 0.106 for Whites are not using the app
+> 0.077 for Whites are using the app
+
+In order to estimate the RD for African Americans with \(80%\) statistical power at an \(α=0.05\) overall level of statistical evidence, the required sample sizes are:
+
+```{r}
+sample_size_black <- ceiling(
+  pwr::pwr.2p.test(
+    h = pwr::ES.h(p1 = risk_used_app_black_training, p2 = risk_didnt_use_app_black_training),
+    sig.level = 0.025,
+    power = .80,
+    alternative = "less"
+  )$n
+)
+sample_size_white <- ceiling(
+  pwr::pwr.2p.test(
+    h = pwr::ES.h(p1 = risk_used_app_white_training, p2 = risk_didnt_use_app_white_training),
+    sig.level = 0.025,
+    power = .80,
+    alternative = "less"
+  )$n
+)
+```
+
+
+
+## Explanatory Modeling (Validation/Confirmation)
+Our holdout dataset has 16000 observations. 
+### Infections by App Usage (Marginal Model)
+Let’s first examine our main relationship of interest, as we did with the training data.
+```{r}
+observational_rwe_holdout %>%
+  ggplot2::ggplot(ggplot2::aes(x = app, fill = infection)) +
+  ggplot2::theme_classic() +
+  ggplot2::geom_bar(position = "dodge") +
+  ggplot2::ggtitle("Infections by App Usage")
+```
+```{r}
+df_rwe_holdout <- with(
+  observational_rwe_holdout,
+  cbind(
+    table(app, infection),
+    prop.table(table(app, infection), margin = 1) # row proportions
+  )
+)
+```
+
+```{r}
+knitr::kable(df_rwe_holdout) # row proportions
+```
+As before, there was a lower infection rate among app users: Only \(9%\) of users had infections, compared to \(26%\) of non-users. The holdout empirical RD is \(-0.169\), similar to the training empirical RD of \(-0.186\).
+
+### Explanatory Model
+#### Check Sample Size
+
+Do we have a large enough sample for each app usage and racial group combination to meet our statistical power and evidence requirements?
+
+```{r}
+observational_rwe_holdout %>%
+  ggplot2::ggplot(ggplot2::aes(x = race, fill = app)) +
+  ggplot2::theme_classic() +
+  ggplot2::geom_bar(position = "dodge") +
+  ggplot2::ggtitle("App Usage by Race")
+```
+```{r}
+df_rwe_holdout_race_app <- with(
+  observational_rwe_holdout,
+  cbind(
+    table(race, app),
+    prop.table(table(race, app), margin = 1) # row proportions
+  )
+)
+```
+
+
+```{r}
+knitr::kable(df_rwe_holdout_race_app) # row proportions
+```
+Yes: We have at least 556 African American individuals in each app usage group, and at least 1617 White individuals likewise.
+
+#### Fit Statistical Model
+
+Based on our proposed causal and statistical models, we fit the following logistic model.
+```{r}
+glm_rwe_holdout <- glm(
+  data = observational_rwe_holdout,
+  formula = as.factor(infection) ~ app + race,
+  family = "binomial"
+)
+```
+
+
+```{r}
+summary(glm_rwe_holdout)$coefficients
+```
+
+After controlling for race, there is good statistical evidence (\(p < 0.001\)) for the estimated association between app usage and infection. This confirms our training-data findings. There is also very strong statistical evidence (\(p \ll 0.001\)) for race’s association with infection risk. Specifically, the estimated odds of infection for Whites were \(\exp(-1.934) = 0.145\) (95% CI: 0.127, 0.165) times that of African Americans (regardless of app usage).
+
+The estimated odds of infection for app users were \(\exp(-0.232) = 0.793\) (95% CI: 0.696, 0.905) times that of non-users (regardless of race). The corresponding estimated infection risks for app usage by race are:
+
+```{r}
+risk_didnt_use_app_black_holdout <- plogis(coef(glm_rwe_holdout) %*% c(1, 0, 0))
+risk_used_app_black_holdout <- plogis(coef(glm_rwe_holdout) %*% c(1, 1, 0))
+risk_didnt_use_app_white_holdout <- plogis(coef(glm_rwe_holdout) %*% c(1, 0, 1))
+risk_used_app_white_holdout <- plogis(coef(glm_rwe_holdout) %*% c(1, 1, 1))
+```
+
+> 0.42 for African Americans not using the app
+> 0.365 for African Americans using the app
+> 0.095 for Whites not using the app
+> 0.077 for Whites using the app
+
+The estimated RDs by race are:
+
+```{r}
+rwe_holdout_rd_black <- risk_used_app_black_holdout - risk_didnt_use_app_black_holdout
+rwe_holdout_rd_white <- risk_used_app_white_holdout - risk_didnt_use_app_white_holdout
+confint_glm_rwe_holdout <- confint(glm_rwe_holdout) # 95% CIs: odds ratios of infection
+rwe_holdout_rd_ci_black <- c(
+  plogis(confint_glm_rwe_holdout[, 1] %*% c(1, 1, 0)) - plogis(confint_glm_rwe_holdout[, 1] %*% c(1, 0, 0)),
+  plogis(confint_glm_rwe_holdout[, 2] %*% c(1, 1, 0)) - plogis(confint_glm_rwe_holdout[, 2] %*% c(1, 0, 0))
+)
+rwe_holdout_rd_ci_white <- c(
+  plogis(confint_glm_rwe_holdout[, 1] %*% c(1, 1, 1)) - plogis(confint_glm_rwe_holdout[, 1] %*% c(1, 0, 1)),
+  plogis(confint_glm_rwe_holdout[, 2] %*% c(1, 1, 1)) - plogis(confint_glm_rwe_holdout[, 2] %*% c(1, 0, 1))
+)
+```
+> -0.055 (95% CI: -0.083, -0.025) for African Americans
+> -0.018 (95% CI: -0.022, -0.01) for Whites
+
+## Conclusion and Public Health Implications  
+
+Estimating the True ATE of -0.031  
+
+#### Attempt 1: Holdout Empirical Risk Difference  
+Using the holdout empirical risk difference (RD) of -0.169 as a proxy for the average treatment effect (ATE) introduces significant bias due to confounding by race. The true bias is calculated as:  
+\[
+\text{Bias} = -0.169 - (-0.031) = -0.138
+\]  
+
+This overestimation has critical implications:  
+> Mistaking the empirical RD for the ATE would lead policymakers to falsely claim the telemedicine app reduces infection risk by 16.9%, while its true effect is only 3.1%.  
+
+##### Public Health Consequences:  
+- Resource Misallocation: Health authorities may waste time and funds deploying an ineffective app, delaying adoption of proven interventions (e.g., vaccine distribution).  
+- Exacerbated Health Disparities: Structural inequalities in app access (e.g., smartphone ownership disparities) could worsen outcomes for marginalized groups.  
+- Economic Strain: Hospitals and governments may allocate budgets based on inflated projections, leading to financial shortfalls.  
+
+#### Attempt 2: Addressing Confounding (To Be Continued...)  
+
+##### Limitations of Race-Specific RDs  
+The ATE is a population-averaged marginal effect, not a conditional (race-stratified) estimate. Race-specific RDs fail to account for population composition.  
+
+##### Solutions for Unbiased Estimation:  
+1. **g-Formula**: Weight race-specific RDs by the proportion of each racial group in the population:  
+   \[
+   \text{ATE} = \sum_z \text{RD}_z \cdot \Pr(Z = z)
+   \]  
+2. **Propensity Score Weighting**: Adjust for unequal app usage probabilities across racial groups.  
+
+##### Role of RCTs:  
+Randomized controlled trials (RCTs) eliminate confounding by design, enabling unbiased ATE estimation. We explore this in **Part 2**, alongside applications of the g-formula and propensity score weighting.  
+
+
+# Part 2
+
+## Introduction
+
+We would overstate our health app’s effectiveness by claiming it reduces the risk of new coronavirus infections by 16.9%-when in fact it will only reduce this risk by 3.1%. But we can re-weight our real-world evidence results to provide more accurate risk-reduction estimates of either 2.3% or 2.2%. This part demonstrates how to overcome confounding in observational data to estimate the true ATE (-0.031), bridging the gap between RWE and RCT validity.  
+
+| Part | Study Design               | Confounder Adjustment       | Empirical Bias | Estimated Risk Reduction       |  
+|------|----------------------------|------------------------------|----------------|---------------------------------|  
+| 1    | RWE (observational study)  | Not done                     | -0.138         | Overstated                      |  
+| *2*    | RCT (experimental study)   | Not done                     | -0.003         | Consistently estimated          |  
+| *2*    | RWE (observational study)  | g-formula                    | 0.008          | Consistently estimated          |  
+| *2*    | RWE (observational study)  | Propensity score weighting   | 0.010          | Consistently estimated          |  
+
+We conduct a simulated **randomized controlled trial (RCT)** involving 9,600 participants, with 50% randomly assigned to use the telemedicine app and full compliance observed. This dataset mirrors real-world observational data, retaining three key variables: binary `infection` status (infected/not infected), binary `app` usage (user/non-user), and categorical `race` (Black/White). By design, race acts as the sole confounder, influencing both app access and infection risk through structural inequalities (e.g., differential smartphone ownership and healthcare access).  
+
+Our primary objective is to estimate the **true average treatment effect (ATE)** of app usage on infection risk (-0.031) using two causal adjustment methods:  
+1. g-formula (standardization): Re-weight race-stratified risk differences by the population distribution of race to compute a marginal ATE.  
+2. Propensity score weighting: Balance racial groups by inverse-probability weighting based on estimated app usage probabilities.  
+
+This analysis will demonstrate how the **Law of Total Expectation** underpins causal adjustment methods, enabling unbiased ATE estimation even in observational data. We’ll explore its connection to Pearl’s **back-door adjustment criterion**, which formalizes confounder adjustment in causal graphs. Finally, we’ll synthesize these insights into an **actionable reporting framework** for communicating ATE estimates derived from real-world evidence, bridging the gap between statistical rigor and public health decision-making.  
+ 
+
+## Generate Data: RCT Simulation
+
+```{r}
+##### Set simulation parameters
+
+### Preliminaries
+random_seed <- 2004101447
+sample_size_observational <- 80000
+holdout_proportion <- 0.2
+sample_size_experimental <- sample_size_observational * holdout_proportion * 0.6
+
+### Feature distribution
+piZ <- 0.755 / (0.755 + 0.127) # race (based on U.S. Census)
+
+### Outcome model
+
+# beta0 and betaZ are derived from:
+#   https://www.cdc.gov/mmwr/volumes/69/wr/mm6915e3.htm
+#   https://www.npr.org/sections/coronavirus-live-updates/2020/04/08/830030932/cdc-hospital-data-point-to-racial-disparity-in-covid-19-cases
+#   https://www.washingtonpost.com/news/powerpost/paloma/the-health-202/2020/04/09/the-health-202-los-angeles-is-racing-to-discover-the-true-coronavirus-infection-rate/5e8de70588e0fa101a75e13d/
+
+prInfection <- 0.15
+prBlack <- 1 - piZ
+prWhite <- piZ
+prBlackGivenInfection <- 33 / (33 + 45)
+prWhiteGivenInfection <- 1 - prBlackGivenInfection
+prInfectionGivenBlack <- prBlackGivenInfection * prInfection / prBlack
+prInfectionGivenWhite <- prWhiteGivenInfection * prInfection / prWhite
+
+beta0 <- log(prInfectionGivenBlack / (1 - prInfectionGivenBlack)) # baseline: infection risk for African Americans who don't use app
+betaX <- -0.3
+betaZ <- log(prInfectionGivenWhite / (1 - prInfectionGivenWhite)) - beta0 # average influence of being White on infection risk
+
+### Propensity model: app usage
+alpha0_experimental <- 0 # randomized controlled trial: 0.5 randomization probability
+alphaZ_experimental <- 0 # randomized controlled trial: 0.5 randomization probability
+
+##### Generate data.
+set.seed(random_seed + 3)
+experimental_rct <- dplyr::tibble(
+  race = rbinom(n = sample_size_experimental, size = 1, prob = piZ),
+  app = rbinom(n = sample_size_experimental, size = 1, prob = plogis(alpha0_experimental + alphaZ_experimental * race)),
+  infection = rbinom(n = sample_size_experimental, size = 1, prob = plogis(beta0 + betaX * app + betaZ * race))
+) %>%
+  dplyr::mutate(
+    race = ifelse(race == 1, "White", ifelse(race == 0, "Black", NA)),
+    app = ifelse(app == 1, "used app", ifelse(app == 0, "didn't use app", NA)),
+    infection = ifelse(infection == 1, "1. infected", ifelse(infection == 0, "0. uninfected", NA))
+  )
+```
+
+
+## Dataset Characteristics
+The observed (i.e., non-randomized) RWE data are in the tibble observational_rwe
+```{r}
+glimpse(experimental_rct)
+```
+Each observation (i.e., row) represents a unique individual who was originally susceptible and uninfected. The variables and their unique values are the same as in Part 1:
+```{r}
+knitr::kable(apply(experimental_rct, 2, unique))
+```
+Our RCT dataset has 9600 observations.
+
+
+## Exploratory Data Analysis
+### Univariate Associations
+#### Correlation Matrix
+```{r}
+dummy_rct <- experimental_rct %>%
+  dplyr::mutate(
+    race = (race == "White"),
+    app = (app == "used app"),
+    infection = (infection == "1. infected")
+  )
+```
+
+```{r}
+knitr::kable(round(cor(dummy_rct), 4))
+```
+
+```{r}
+corrplot::corrplot.mixed(cor(dummy_rct))
+```
+Unlike the RWE correlation matrix in Part 1, race is no longer correlated with app. This is because we randomized app usage.
+#### Infections by App Usage (Marginal Model)
+Let’s first examine our main relationship of interest, as we did with the training data.
+```{r}
+experimental_rct %>%
+  ggplot2::ggplot(ggplot2::aes(x = app, fill = infection)) +
+  ggplot2::theme_classic() +
+  ggplot2::geom_bar(position = "dodge") +
+  ggplot2::ggtitle("Infections by App Usage")
+```
+
+```{r}
+df_rct <- with(
+  experimental_rct,
+  cbind(
+    table(app, infection),
+    prop.table(table(app, infection), margin = 1) # row proportions
+  )
+)
+rct_rd <- df_rct[2,4] - df_rct[1,4]
+```
+
+```{r}
+rct_rd # empirical RD
+```
+
+```{r}
+knitr::kable(df_rct) # row proportions
+```
+As in Part 1, there was a lower infection rate among app users: only 11.8% of users had infections, compared to 15.2% of non-users. However, the empirical risk difference (RD) is -0.034, which is much closer to the true average treatment effect (ATE) of -0.031. This value is markedly smaller than the “false ATE estimate” of -0.169 (i.e., the RWE holdout empirical RD) that would have misled public health authorities about the true effectiveness of our app in reducing coronavirus infections.
+
+```{r}
+out_fisher_rct <- with(
+  experimental_rct,
+  fisher.test(app, infection)
+)
+```
+
+```{r}
+out_fisher_rct
+```
+In addition, there is strong statistical evidence (i.e., statistical significance) that infections varied by app usage (\(p \ll 0.001\)). (*Note*: This corresponds to a two-sided hypothesis test; our RCT hypothesis is one-sided.) Here, the estimated odds of infection for app users were **0.747** (i.e., roughly three quarters) that of non-users, with a 95% confidence interval (CI) of **(0.662, 0.842)**.
+
+```{r}
+out_epi.2by2 <- epiR::epi.2by2(
+  with(
+    experimental_rct,
+    table(app == "didn't use app", infection == "0. uninfected")
+  )
+)
+```
+
+```{r}
+out_epi.2by2$res$ARisk.crude.wald / 100
+```
+The corresponding estimated RD with 95% CI is **-0.034** (95% CI: -0.048, -0.02). (*Note*: This corresponds to a two-sided hypothesis test; our RCT hypothesis is one-sided.) That is, we’re 95% confident that using the app lowered the risk of infection by somewhere between **0.02** and **0.048**. This is now a statement about a **causal effect**, not merely a statistical association.
+
+We *could* stop here because our RCT was designed to properly estimate the ATE. To recap from Part 1:  
+- **ATE as a marginal quantity**: It does not account for ("is marginalized over") other variables.  
+- **Conditional model**: A model that adjusts for additional variables (e.g., race) alongside the intervention (app usage).  
+
+Next Steps  
+1. **Explanatory Model**: We’ll fit the Part 1 conditional model that included race as a confounder.  
+2. **Causal Inference via Standardization**: We’ll "roll up" predictions from this model to match our estimated RD.  
+3. **ATE Estimation**: Apply this procedure to estimate the ATE consistently using **original RWE data**.  
+
+#### Infections by Race
+As in Part 1, race remained associated with infection risk in the RCT data.  
+```{r}
+experimental_rct %>%
+  ggplot2::ggplot(ggplot2::aes(x = race, fill = infection)) +
+  ggplot2::theme_classic() +
+  ggplot2::geom_bar(position = "dodge") +
+  ggplot2::ggtitle("Infections by Race")
+```
+
+```{r}
+df_rct_race_infection <- with(
+  experimental_rct,
+  cbind(
+    table(race, infection),
+    prop.table(table(race, infection), margin = 1) # row proportions
+  )
+)
+```
+
+```{r}
+knitr::kable(df_rct_race_infection) # row proportions
+```
+
+```{r}
+out_fisher_rct_race_infection <- with(
+  experimental_rct,
+  fisher.test(race, infection)
+)
+```
+
+```{r}
+out_fisher_rct_race_infection
+```
+As before, African Americans were more likely to have been infected than Whites (\(p \ll 0.001\)): **40.3%** of African Americans were infected, compared to **9.2%** of Whites. Put differently, the estimated odds of infection for Whites were **0.149** (95% CI: 0.13, 0.171) times that of African Americans.
+
+#### App Usage by Race
+Unlike our RWE findings in Part 1, race is **no longer correlated with app usage** in the RCT data. This is because we *randomized* app usage, breaking the structural association between race and app access observed in observational settings.  
+```{r}
+experimental_rct %>%
+  ggplot2::ggplot(ggplot2::aes(x = race, fill = app)) +
+  ggplot2::theme_classic() +
+  ggplot2::geom_bar(position = "dodge") +
+  ggplot2::ggtitle("App Usage by Race")
+```
+
+```{r}
+df_rct_race_app <- with(
+  experimental_rct,
+  cbind(
+    table(race, app),
+    prop.table(table(race, app), margin = 1) # row proportions
+  )
+)
+```
+
+```{r}
+knitr::kable(df_rct_race_app) # row proportions
+```
+```{r}
+out_fisher_rct_race_app <- with(
+  experimental_rct,
+  fisher.test(race, app)
+)
+```
+
+```{r}
+out_fisher_rct_race_app
+```
+
+### Explanatory Model
+#### Causal Model
+
+From Part 1, recall that an explanatory model consists of a causal model and a statistical model. The causal model is often specified as a directed acyclic graph (DAG) (Pearl, 2009). We had assumed that the true DAG was:
+
+1. App Usage → Infection
+2. Race → Infection
+3. Race → App Usage
+
+```{r}
+DiagrammeR::grViz("
+digraph causal {
+
+  # Nodes
+  node [shape = plaintext]
+  Z [label = 'Race']
+  X [label = 'App \n Usage']
+  Y [label = 'Infection']
+
+  # Edges
+  edge [color = black,
+        arrowhead = vee]
+  rankdir = LR
+  X -> Y
+  Z -> X
+  Z -> Y
+
+  # Graph
+  graph [overlap = true]
+}", width = "400px", height = "200px")
+```
+Here, race confounds the effect of app usage on infection.
+#### Check Sample Size
+Do we have a large enough sample for each app usage and racial group combination to meet our Part 1 statistical power and evidence requirements?
+```{r}
+experimental_rct %>%
+  ggplot2::ggplot(ggplot2::aes(x = race, fill = app)) +
+  ggplot2::theme_classic() +
+  ggplot2::geom_bar(position = "dodge") +
+  ggplot2::ggtitle("App Usage by Race")
+```
+```{r}
+df_rct_race_app <- with(
+  experimental_rct,
+  cbind(
+    table(race, app),
+    prop.table(table(race, app), margin = 1) # row proportions
+  )
+)
+```
+
+```{r}
+knitr::kable(df_rct_race_app) # row proportions
+```
+
+Yes: We have at least 556 African American individuals in each app usage group, and at least 1617 White individuals likewise.
+#### Fit Statistical Model
+We fit our RCT logistic model as follows.
+
+```{r}
+glm_rct <- glm(
+  data = experimental_rct,
+  formula = as.factor(infection) ~ app + race,
+  family = "binomial"
+)
+```
+
+```{r}
+knitr::kable(summary(glm_rct)$coefficients)
+```
+After controlling for race, there is strong statistical evidence (\(p \ll 0.001\)) for the estimated effect of app usage on infection risk. There is also very strong statistical evidence (\(p \ll< 0.001\)) for race’s association with infection risk. Specifically, the estimated odds of infection for Whites were \(\exp(-1.909) = 0.148\) (95% CI: 0.13, 0.169) times that of African Americans (regardless of app usage).
+
+The estimated odds of infection for app users were \(\exp(-0.313) = 0.731\) (95% CI: 0.645, 0.828) times that of non-users (regardless of race). The corresponding estimated infection risks for app usage by race are:
+```{r}
+risk_didnt_use_app_black_rct <- plogis(coef(glm_rct) %*% c(1, 0, 0))
+risk_used_app_black_rct <- plogis(coef(glm_rct) %*% c(1, 1, 0))
+risk_didnt_use_app_white_rct <- plogis(coef(glm_rct) %*% c(1, 0, 1))
+risk_used_app_white_rct <- plogis(coef(glm_rct) %*% c(1, 1, 1))
+```
+0.441 for African Americans not using the app, 0.365 for African Americans using the app, 0.105 for Whites not using the app, 0.079 for Whites using the app. The estimated RDs by race are:
+```{r}
+rct_rd_black <- risk_used_app_black_rct - risk_didnt_use_app_black_rct
+rct_rd_white <- risk_used_app_white_rct - risk_didnt_use_app_white_rct
+confint_glm_rct <- confint(glm_rct) # 95% CIs: odds ratios of infection
+rct_rd_ci_black <- c(
+  plogis(confint_glm_rct[, 1] %*% c(1, 1, 0)) - plogis(confint_glm_rct[, 1] %*% c(1, 0, 0)),
+  plogis(confint_glm_rct[, 2] %*% c(1, 1, 0)) - plogis(confint_glm_rct[, 2] %*% c(1, 0, 0))
+)
+rct_rd_ci_white <- c(
+  plogis(confint_glm_rct[, 1] %*% c(1, 1, 1)) - plogis(confint_glm_rct[, 1] %*% c(1, 0, 1)),
+  plogis(confint_glm_rct[, 2] %*% c(1, 1, 1)) - plogis(confint_glm_rct[, 2] %*% c(1, 0, 1))
+)
+```
+-0.075 (95% CI: -0.1, -0.047) for African Americans
+-0.026 (95% CI: -0.028, -0.02) for Whites
+
+
+## Causal Inference
+### Rolling Up the Conditional Estimated Risks
+#### Randomized Controlled Trial
+We can use our explanatory model’s estimated coefficients to predict the infection risk for each person.
+```{r}
+experimental_rct_preds <- experimental_rct %>%
+  dplyr::mutate(predicted_risk = predict(object = glm_rct, type = "response"))
+tbl_estimated_risks_rct <- experimental_rct_preds %>%
+  dplyr::select(race, app, predicted_risk) %>%
+  dplyr::distinct() %>%
+  dplyr::arrange(race, app)
+```
+The predicted risks for each `race` and `app` combination are:
+```{r}
+knitr::kable(tbl_estimated_risks_rct)
+```
+These predicted risks are just the estimated infection risks for app usage by race we’d calculated earlier. (Note that while predicted probabilities such as these are used in classification, they aren’t “predictions” in the classification sense. The latter can only take on the values of “used app” or “didn’t use app”, not continuous probabilities. The predicted risks are “predictions” by the standard statistics—not machine learning—definition.)
+
+We “roll up” these estimated risks to the level of app usage by taking their averages over both racial categories for app users and non-users.
+```{r}
+tbl_aac_rct <- experimental_rct_preds %>%
+  dplyr::group_by(app) %>%
+  dplyr::summarize(mean_preds = mean(predicted_risk))
+estimated_AAC_rct <- tbl_aac_rct$mean_preds[2] - tbl_aac_rct$mean_preds[1]
+```
+
+```{r}
+knitr::kable(tbl_aac_rct)
+```
+But the estimated RD we calculate from these average estimated risks is exactly the same as the empirical RD we’d calculated earlier.
+```{r}
+rct_rd # RCT: empirical RD
+```
+```{r}
+estimated_AAC_rct # RCT: RD from average estimated risks
+```
+So can’t we just do this with our RWE estimated risks to come up with a similar estimate?
+```{r}
+# RWE: empirical RD
+df_rwe_holdout <- with(
+  observational_rwe_holdout, # see Part 1 to generate this:
+    # https://towardsdatascience.com/coronavirus-telemedicine-and-race-part-1-simulated-real-world-evidence-9971f553194d?source=email-8430d9f1992d-1586971057342-layerCake.autoLayerCakeWriterNotification-------------------------90bb4612_8a36_4b93_81dd_1656d841e715&sk=32bfb03e1ca157e423ecf8cb69835ef3
+  cbind(
+    table(app, infection),
+    prop.table(table(app, infection), margin = 1) # row proportions
+  )
+)
+rwe_holdout_rd <- df_rwe_holdout[2,4] - df_rwe_holdout[1,4]
+
+# RWE: RD from average estimated risks
+observational_rwe_preds <- observational_rwe_holdout %>%
+  dplyr::mutate(predicted_risk = predict(object = glm_rwe_holdout, type = "response"))
+tbl_estimated_risks_rwe <- observational_rwe_preds %>%
+  dplyr::select(race, app, predicted_risk) %>%
+  dplyr::distinct() %>%
+  dplyr::arrange(race, app)
+tbl_aac_rwe <- observational_rwe_preds %>%
+  dplyr::group_by(app) %>%
+  dplyr::summarize(mean_preds = mean(predicted_risk))
+estimated_AAC_rwe <- tbl_aac_rwe$mean_preds[2] - tbl_aac_rwe$mean_preds[1]
+```
+
+```{r}
+knitr::kable(tbl_estimated_risks_rwe)
+```
+```{r}
+knitr::kable(tbl_aac_rwe)
+```
+```{r}
+rwe_holdout_rd # RWE: empirical RD
+```
+Apparently not, lets see What happened.
+
+### The Law of Total Expectation
+
+#### Real-world Evidence: App Users
+The Law of Total Expectation (LTE) states:
+
+\[
+E(Y) = E_Z \left\{ E(Y \mid Z) \right\}
+\]
+
+That is, the expected value of a random variable **Y** is equal to expectation of the expected value of **Y** conditional on a different random variable **Z**, taken over all values of **Z**.
+
+Applying the LTE to our RWE holdout data. For simplicity, we’ll just look at app users; similar reasoning holds for app non-users.
+
+- We have \( n = 9600 \) individuals.
+- Let \( Y_i = 1 \) if individual \( i \) was infected, and \( Y_i = 0 \) if uninfected.
+- Let \( X_i = 1 \) if individual \( i \) used the app, and \( X_i = 0 \) if they didn’t.
+- Let \( Z_i = 1 \) if individual \( i \) is White, and \( Z_i = 0 \) if they are Black.
+- Let \( \hat{R}_i = \Pr(Y_i = 1 | X_i, Z_i) \) represent the estimated infection risk given \( X_i \) and \( Z_i \).
+
+Among app users, the overall estimated risk was \( (\sum_i^n Y_i X_i) / (\sum_i^n X_i) = 0.09 \). The average estimated risk was:
+
+\[
+\left( \sum_i^n \hat{R}_i X_i Z_i \middle/ \sum_i^n X_i Z_i \right) = \Pr(Y = 1 | X = 1, Z = 1) = 0.077 \text{ for Whites}
+\]
+
+\[
+\left\{ \sum_i^n \hat{R}_i X_i (1 - Z_i) \middle/ \sum_i^n X_i (1 - Z_i) \right\} = \Pr(Y = 1 | X = 1, Z = 0) = 0.365 \text{ for African Americans}
+\]
+
+The proportion of each race was:
+
+\[
+\left( \sum_i^n X_i Z_i \middle/ \sum_i^n X_i \right) = 0.952 \text{ White}
+\]
+\[
+\left( \sum_i^n X_i (1 - Z_i) \middle/ \sum_i^n X_i \right) = 0.048 \text{ Black}
+\]
+
+The weighted average of average estimated risks taken over both race categories is equal to the overall estimated risk:
+
+\[
+\left\{ \frac{\sum_i^n \hat{R}_i X_i Z_i}{\sum_i^n X_i Z_i} \times \frac{\sum_i^n X_i Z_i}{\sum_i^n X_i} \right\}
++
+\left\{ \frac{\sum_i^n \hat{R}_i X_i (1 - Z_i)}{\sum_i^n X_i (1 - Z_i)} \times \frac{\sum_i^n X_i (1 - Z_i)}{\sum_i^n X_i} \right\}
+= \frac{\sum_i^n \hat{R}_i X_i}{\sum_i^n X_i}
+= \frac{\sum_i^n Y_i X_i}{\sum_i^n X_i}
+\]
+
+```{r}
+observational_rwe_preds %>%
+  dplyr::filter(app == "used app") %>%
+  dplyr::mutate(
+    weight_Black = (race == "Black") * mean(observational_rwe_holdout$race[observational_rwe_holdout$app == "used app"] == "Black"),
+    weight_White = (race == "White") * mean(observational_rwe_holdout$race[observational_rwe_holdout$app == "used app"] == "White"),
+    predicted_risk_weighted = predicted_risk * (race == "Black") * weight_Black +
+      predicted_risk * (race == "White") * weight_White
+  ) %>%
+  dplyr::group_by(race) %>%
+  dplyr::summarize(mean_preds_weighted_rwe = mean(predicted_risk_weighted)) %>%
+  dplyr::summarize(sum_mean_preds_weighted_rwe = sum(mean_preds_weighted_rwe))
+```
+Comparing this to our earlier code we used to calculate the empirical RD, which did not explicitly average of race-specific average estimated risks:
+```{r}
+observational_rwe_preds %>%
+  dplyr::filter(app == "used app") %>%
+  dplyr::summarize(mean_preds = mean(predicted_risk))
+```
+
+
+#### Randomized Controlled Trial: App Users
+Now let’s apply the LTE to our RCT data. Again, we’ll just look at app users. We’ll use the exact same formulas.
+
+Among app users, the overall estimated risk was 0.118. The average estimated risk was:
+
+1. 0.079 for Whites
+2. 0.365 for African Americans
+
+The proportion of each race was:
+
+1. 0.863 White
+2. 0.137 Black
+The weighted average of average estimated risks taken over both race categories is equal to the overall estimated risk: (0.079 * 0.863) + (0.365 * 0.137) = 0.118. Here’s some code that does this explicitly:
+```{r}
+experimental_rct_preds %>%
+  dplyr::filter(app == "used app") %>%
+  dplyr::mutate(
+    weight_Black = (race == "Black") * mean(experimental_rct$race[experimental_rct$app == "used app"] == "Black"),
+    weight_White = (race == "White") * mean(experimental_rct$race[experimental_rct$app == "used app"] == "White"),
+    predicted_risk_weighted = predicted_risk * (race == "Black") * weight_Black +
+      predicted_risk * (race == "White") * weight_White
+  ) %>%
+  dplyr::group_by(race) %>%
+  dplyr::summarize(mean_preds_weighted_rct = mean(predicted_risk_weighted)) %>%
+  dplyr::summarize(sum_mean_preds_weighted_rct = sum(mean_preds_weighted_rct))
+```
+
+
+## The G-Formula  
+
+### Outcome Model  
+We had assumed that race and app usage both impact the infection risk. The relevant part of our earlier DAG is:  
+
+1. `App Usage (X)` → `Infection (Y)`  
+2. `Race (Z)` → `Infection (Y)`  
+```{r}
+DiagrammeR::grViz("
+digraph causal {
+  graph [rankdir=LR, fontsize=10, width=0.5, height=0.3, overlap=false, nodesep=0.2]
+
+  node [shape=plaintext, 
+        fontsize=10, 
+        width=0.3, 
+        height=0.2]
+        
+  edge [color=black, 
+        arrowhead=vee, 
+        penwidth=0.8]
+
+  X [label='App\\nUsage\\n(X)']
+  Z [label='Race\\n(Z)']
+  Y [label='Infection\\n(Y)']
+
+  X -> Y
+  Z -> Y
+}", width = "400px", height = "200px")
+
+```
+Thus far, we’ve been investigating this DAG’s corresponding statistical model. This is often called an outcome model in the causal inference literature because it models how the outcome is statistically related to its input variables (inputs). Our outcome model is a logistic model of `infection` risk as a function of `app usage` and `race`.
+
+### G-Formula: Standardizing RWE Estimates
+#### RCT Substitution
+In the RWE data, race influenced the propensity of using the app. As a result, app users were more likely to be White than non-users. However, the proportion of each race among app users and non-users were very similar in the RCT data. This is because randomizing app usage made it statistically independent of race. Hence, the app-usage-specific proportions approximated the overall race proportions, which were:
+
+- \(\frac{1}{n} \sum_{i}^{n} (1 - Z_i) = 0.139\) Black
+- \(\frac{1}{n} \sum_{i}^{n} Z_i = 0.861\) White
+
+That is, app users were:
+
+- \(\left(\sum_{i}^{n} X_i Z_i\right) / \left(\sum_{i}^{n} X_i\right) = 0.863 \approx 0.861 = \frac{1}{n} \sum_{i}^{n} Z_i\) White
+- \(\left(\sum_{i}^{n} X_i (1 - Z_i)\right) / \left\{\sum_{i}^{n} X_i\right\} = 0.137 \approx 0.139 = \frac{1}{n} \sum_{i}^{n} (1 - Z_i)\) Black
+
+So we can set \(X_i = 1\) for all \(i\), such that the race proportions we use are:
+
+- \(\left(\sum_{i}^{n} 1 Z_i\right) / \left(\sum_{i}^{n} 1\right) = \frac{1}{n} \sum_{i}^{n} Z_i = 0.861\) White
+- \(\left(\sum_{i}^{n} 1 (1 - Z_i)\right) / \left\{\sum_{i}^{n} 1\right\} = \frac{1}{n} \sum_{i}^{n} (1 - Z_i) = 0.139\) Black
+
+This is the same as removing `experimental_rct$app == "used app"` from our earlier code like so:
+
+```{r}
+(
+  experimental_rct_preds %>%
+    dplyr::filter(app == "used app") %>%
+    dplyr::mutate(
+      weight_Black = (race == "Black") * mean(experimental_rct$race == "Black"),
+      weight_White = (race == "White") * mean(experimental_rct$race == "White"),
+      predicted_risk_weighted = predicted_risk * (race == "Black") * weight_Black +
+        predicted_risk * (race == "White") * weight_White
+    ) %>%
+    dplyr::group_by(race) %>%
+    dplyr::summarize(mean_preds_weighted_rct = mean(predicted_risk_weighted)) %>%
+    dplyr::summarize(sum_mean_preds_weighted_rct = sum(mean_preds_weighted_rct))
+)$sum_mean_preds_weighted_rct
+```
+Statistically, this substitution is acceptable: We are simply replacing one statistically consistent estimate of the true race proportions with another. But what happens if we do this with our RWE data?
+
+#### RWE Re-weighting
+Using our RWE dataset, let’s re-weight the average estimated risks for app users using the overall race proportions instead of the app-usage-specific proportions by removing [observational_rwe_holdout$app == "used app"] from our earlier code like so:
+Statistically, this substitution is acceptable: We are simply replacing one statistically consistent estimate of the true race proportions with another. But what happens if we do this with our RWE data?
+
+RWE Re-weighting
+Using our RWE dataset, let’s re-weight the average estimated risks for app users using the overall race proportions instead of the app-usage-specific proportions by removing `[observational_rwe_holdout$app == "used app"]` from our earlier code like so:
+```{r}
+(
+  observational_rwe_preds %>%
+    dplyr::filter(app == "used app") %>%
+    dplyr::mutate(
+      weight_Black = (race == "Black") * mean(observational_rwe_holdout$race == "Black"),
+      weight_White = (race == "White") * mean(observational_rwe_holdout$race == "White"),
+      predicted_risk_weighted = predicted_risk * (race == "Black") * weight_Black +
+        predicted_risk * (race == "White") * weight_White
+    ) %>%
+    dplyr::group_by(race) %>%
+    dplyr::summarize(mean_preds_weighted_rwe = mean(predicted_risk_weighted)) %>%
+    dplyr::summarize(sum_mean_preds_weighted_rwe = sum(mean_preds_weighted_rwe))
+)$sum_mean_preds_weighted_rwe
+```
+This quantity is much closer to our RCT estimate. We apply this same re-weighting to the app non-users using the following code:
+```{r}
+tbl_ate_gf <- observational_rwe_preds %>%
+  dplyr::mutate(
+    predicted_risk = predict(object = glm_rwe_holdout, type = "response"),
+    predicted_risk_X1 = predict(
+      object = glm_rwe_holdout,
+      newdata = observational_rwe_holdout %>%
+        dplyr::mutate(app = "used app"),
+      type = "response"
+    ),
+    predicted_risk_X0 = predict(
+      object = glm_rwe_holdout,
+      newdata = observational_rwe_holdout %>%
+        dplyr::mutate(app = "didn't use app"),
+      type = "response"
+    ),
+    gformula_weight = (race == "Black") * mean(observational_rwe_holdout$race == "Black") +
+      (race == "White") * mean(observational_rwe_holdout$race == "White"),
+    predicted_risk_weighted = predicted_risk * gformula_weight
+  ) %>%
+  dplyr::group_by(app, race) %>%
+  dplyr::summarize(mean_preds_weighted_rwe = mean(predicted_risk_weighted))
+estimated_ATE_gf <- (tbl_ate_gf$mean_preds_weighted_rwe[3] + tbl_ate_gf$mean_preds_weighted_rwe[4]) -
+  (tbl_ate_gf$mean_preds_weighted_rwe[1] + tbl_ate_gf$mean_preds_weighted_rwe[2])
+```
+We calculate the estimated RD as -0.023. Compare this to our RCT estimated RD of -0.034. Both estimates are much closer to the true ATE of -0.031 than our original RWE estimated RD of -0.169.
+
+The re-weighting procedure can be more generally stated as:
+
+Calculate the proportion of each combination of confounder values (i.e., the empirical joint distribution of confounders).
+Weight the estimated average outcomes (conditional on all confounders) by their corresponding confounder proportions from Step 1.
+For each would-be intervention group, sum these weighted estimates. This general procedure is known as the g-formula. The contrast (e.g., difference, ratio) of these standardized sums is a statistically consistent estimate of the ATE.
+
+### Intuition: Standardization
+Why does this re-weighting method work? The idea is that we can estimate the ATE in a statistically consistent or unbiased way using an RCT. But when we only have RWE data, we can still replicate the way an RCT breaks the influence—and thereby, statistical association—of the confounders on the would-be intervention.
+
+For each would-be intervention group, the g-formula achieves this by standardizing (in epidemiological terms) the distribution of confounders in the RWE to the distribution of confounders in the corresponding RCT. The latter is the same as the overall distribution of confounders (i.e., regardless of intervention group) thanks to randomization.
+
+## Propensity Score Weighting
+Recall that in our RWE data, African Americans were less likely to have used the app than Whites: Only 27.2% of African Americans used the app, compared to 88.2% of Whites. That is, the propensity to use the app was 0.272 among African American individuals, but 0.882 among White individuals.
+```{r}
+observational_rwe_training %>%
+  ggplot2::ggplot(ggplot2::aes(x = race, fill = app)) +
+  ggplot2::theme_classic() +
+  ggplot2::geom_bar(position = "dodge") +
+  ggplot2::ggtitle("App Usage by Race")
+```
+```{r}
+knitr::kable(df_rwe_training_race_app) # row proportions
+```
+
+### Propensity Model
+#### Causal and Statistical Models
+We had assumed that race affects app usage. The relevant part of our earlier DAG is:
+
+Race (Z) → App Usage (X)
+
+Race is said to influence the propensity to use the app. Hence, the statistical model of this relationship is often called a propensity model in the causal inference literature. That is, it models how the would-be intervention is statistically related to its inputs.
+
+The true model for `app` usage as a function of `race` is the logistic model listed in the Appendix of Part 1. The propensity to use the app is measured as the probability of using the app. In the context of this causal model, this probability is therefore called a propensity score (Rosenbaum and Rubin, 1983). 
+
+In reality, we wouldn’t know this true model. But suppose we’d correctly modeled it and estimated its parameters as follows:
+```{r}
+glm_rwe_holdout_ps <- glm(
+  data = observational_rwe_holdout,
+  formula = as.factor(app) ~ race,
+  family = "binomial"
+)
+```
+
+```{r}
+knitr::kable(summary(glm_rwe_holdout_ps)$coefficients)
+```
+### Intuition: Survey Sampling (Horvitz-Thompson Weights)
+The propensity to use our app is like a selection process: here, “being selected” to use the app depended on race.
+
+In survey sampling, such selection probabilities are used in probability sampling to ensure that survey participants are representative of the target population from which they are sampled. These probabilities are specified in the survey design—and hence, fully known in advance.
+
+These selection probabilities can then be used to weight the survey respondents’ outcomes by the reciprocal or inverse of their corresponding selection probabilities. This general technique, called inverse probability weighting, provides a statistically consistent estimate of the mean outcome (i.e., the average outcome taken over the entire target population). In survey sampling, the resuling estimator of the population mean is called a Horvitz-Thompson (HT) estimator (Horvitz and Thompson, 1952).
+
+Intuitively, each respondent is weighted in order to represent individuals who are similar in the factors that determine their selection probability. To see how, let’s revisit our earlier example of height and gender:
+
+### Propensity Scores: Weighting RWE Outcomes
+We can apply such an HT estimator to estimate the ATE. In our case, there are two types of “target populations” just within our RWE data:
+
+1. the population of potential outcomes if every individual had used the app
+2. the population of potential outcomes if every individual had not used the app
+
+Each potential outcome (Neyman, 1923; Rubin, 1974; Holland, 1986) is observed according to an individual’s actual app usage. The other unobserved potential outcome is called a counterfactual outcome, or simply counterfactual.
+
+We weight each individual by the inverse of their respective propensity score, sum these values, and divide by the total number of individuals in our dataset to get the weighted averages per app usage group:
+
+```{r}
+tbl_ate_ps <- observational_rwe_holdout %>%
+  dplyr::mutate(
+    infection01 = (infection == "1. infected"),
+    app01 = (app == "used app"),
+    propensityscore_used_app = predict(object = glm_rwe_holdout_ps, type = "response"),
+    propensityscore_didnt_use_app = 1 - propensityscore_used_app
+  )
+estimated_risk_used_app <- with(
+  tbl_ate_ps,
+  sum(infection01[app01 == 1] / propensityscore_used_app[app01 == 1]) / nrow(tbl_ate_ps)
+)
+estimated_risk_didnt_use_app <- with(
+  tbl_ate_ps,
+  sum(infection01[app01 == 0] / propensityscore_didnt_use_app[app01 == 0]) / nrow(tbl_ate_ps)
+)
+estimated_ATE_ps <- estimated_risk_used_app - estimated_risk_didnt_use_app
+```
+
+We calculate the estimated RD as -0.022 comparing this to our RCT estimated RD of -0.034. Both estimates are much closer to the true ATE of -0.031 than our original RWE estimated RD of -0.169.
+
+## Conclusion and Public Health Implications
+
+### No Free Lunch
+
+We’ve successfully applied two causal inference methods to estimate the true ATE of app usage on infection risk. These methods are statistically consistent for the ATE, but they rely on some key assumptions being true:
+
+- **No Unmeasured Confounders:** We’ve observed all possible confounders.
+- **Correct Model Specification:** We’ve correctly specified both the causal and statistical models. (See Part 1 for the difference and relationship between the two.) That is, they both correctly formalize what happens in reality. This assumption applies to the outcome model when using the g-formula, and the propensity model when using propensity score weighting.
+- **Positivity:** There is at least one individual in each intervention group for every unique combination of all observed confounder values (or at least for every rough but reasonably sized unique cluster of said values).
+
+You can learn more about these and other important assumptions in Hernán and Robins (2006) and Hernán and Robins (2020), and at Adam Kelleher’s Medium page.
+
+What’s stopping us from treating as many variables as possible as potential confounders (perhaps after cross-validated model and variable selection)? Why shouldn’t we include them all in the statistical model? One interesting caution against this is the prospect of “M-bias” (Ding and Miratrix, 2015). This is a special type of collider bias (Pearl, 2009) arising from including a model input that is not a confounder. The argument is that including such non-confounders can bias the ATE estimate, due to the induced collider bias.
+
+### Choices, Choices
+
+We’ve decided on an RWE explanatory model. But which statistical model should we fit? The outcome model, or the propensity model? Our choice will depend, in part, on how confident we are in fitting either model. And this choice will determine whether we use the g-formula or propensity score weighting.
+
+What if there is only equivocal evidence in favor of one over the other? Perhaps we’re otherwise agnostic to which model to fit. In such cases, there are what are called “doubly robust” estimators that make use of both models (Bang and Robins, 2005). They are called as much because only one of the models needs to be correctly specified in order for the estimator to yield statistically consistent estimates of the ATE.
+
+### Other Methods
+
+There are at least three other popular methods for enabling ATE estimation and inference using RWE data.
+
+- **Matching:** In this approach, each individual in one intervention group is matched with at least one other individual in the other intervention group. A match is specified as some level of similarity between both individuals’ observed values for confounders. The idea is that any variation left must be due to the would-be intervention-and is therefore a likely treatment effect.
+
+- **Propensity Score Matching:** What if there are too many confounders over which to find good matches? One well-supported solution is to match individuals in opposite intervention groups using their propensity scores, instead (Hirano and Imbens, 2001; Lunceford and Davidian M, 2004).
+
+- **Instrumental Variables:** The g-formula and propensity score weighting both require that we’ve measured all confounders, and have included them in our statistical model. What if this isn’t possible? Suppose we’ve nonetheless observed another RWE variable that effectively randomized the would-be intervention, was not affected by any confounders, and otherwise had no effect on our outcome. This variable is an instrument we can use to calculate a statistically consistent estimate of the ATE (Angrist and Imbens, 1995).
+
+### Public Health Implications
+
+Suppose we mistake [the real-world evidence] empirical RD as an estimate of the ATE. Unbeknownst to us, in our simulated world we would overstate our telemedicine app’s effectiveness by claiming it reduces the risk of new coronavirus infections by 16.9%-when in fact it will only reduce this risk by 3.1%.
+
+But we can re-weight our real-world evidence results to provide more accurate risk-reduction estimates of either 2.3% or 2.2%.
